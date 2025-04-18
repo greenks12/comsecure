@@ -4,12 +4,11 @@ import io
 import random
 from PIL import Image, ImageFilter, ImageOps, ImageDraw, ImageFont
 from cryptography.fernet import Fernet
-import base64
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QLabel, QPushButton, QFileDialog, QScrollArea, QMessageBox, 
-                             QFrame, QSizePolicy)
-from PyQt5.QtGui import QPixmap, QImage, QFont, QPalette, QColor, QBrush, QLinearGradient
-from PyQt5.QtCore import Qt, QSize
+                             QFrame, QSizePolicy, QCheckBox)
+from PyQt5.QtGui import QPixmap, QImage, QFont, QPalette, QColor
+from PyQt5.QtCore import Qt
 
 class ImageEncryptor:
     def __init__(self):
@@ -46,18 +45,33 @@ class SprocketHole(QLabel):
         self.setStyleSheet("background-color: #555555; border-radius: 10px;")
 
 class SecureImageBrowser(QMainWindow):
+    
+    def closeEvent(self, event):
+        if self.current_image_data:
+            try:
+                encrypted_data = self.encryptor.encrypt_image(self.current_image_data)
+                base_name = os.path.basename(self.current_image_path or "auto_saved")
+                name, _ = os.path.splitext(base_name)
+                auto_save_path = os.path.join(os.path.dirname(self.current_image_path or "."), f"{name}_auto.enc")
+                with open(auto_save_path, 'wb') as f:
+                    f.write(encrypted_data)
+                print(f"Auto-encrypted image saved to {auto_save_path}")
+            except Exception as e:
+                print(f"Auto-encryption failed: {e}")
+        event.accept()
+
     def __init__(self):
         super().__init__()
         self.encryptor = ImageEncryptor()
         self.current_image_path = None
         self.current_image_data = None
         self.encrypted_data = None
-        self.original_image = None  
-        self.is_encrypted_view = False  
+        self.original_image = None
+        self.is_encryption_preview = False
         self.initUI()
         
     def initUI(self):
-        self.setWindowTitle("Film Roll Secure Image Browser")
+        self.setWindowTitle("Secure Image Browser")
         self.setGeometry(100, 100, 900, 700)
         self.setStyleSheet("""
             QMainWindow, QWidget {
@@ -88,6 +102,14 @@ class SecureImageBrowser(QMainWindow):
             }
             QLabel {
                 color: #ffffff;
+            }
+            QCheckBox {
+                color: #ffffff;
+                font-size: 12px;
+            }
+            QCheckBox::indicator {
+                width: 16px;
+                height: 16px;
             }
         """)
 
@@ -149,22 +171,20 @@ class SecureImageBrowser(QMainWindow):
         film_layout.addWidget(bottom_strip)
         main_layout.addWidget(film_container)
         
+        # Checkbox for encryption preview
+        self.preview_checkbox = QCheckBox("Show Encryption Preview")
+        self.preview_checkbox.toggled.connect(self.toggle_encryption_preview)
+        main_layout.addWidget(self.preview_checkbox)
+        
         button_layout = QHBoxLayout()
         button_layout.setSpacing(15)
-        self.open_btn = QPushButton("📷 Open Film")
+        self.open_btn = QPushButton("📷 Open Image")
         self.open_btn.clicked.connect(self.open_image)
-        self.encrypt_btn = QPushButton("🔒 Encrypt")
-        self.encrypt_btn.clicked.connect(self.encrypt_image)
-        self.encrypt_btn.setEnabled(False)
-        self.decrypt_btn = QPushButton("🔓 Decrypt")
-        self.decrypt_btn.clicked.connect(self.decrypt_image)
-        self.decrypt_btn.setEnabled(False)
-        self.save_btn = QPushButton("💾 Save")
+        self.save_btn = QPushButton("💾 Save Image")
         self.save_btn.clicked.connect(self.save_image)
         self.save_btn.setEnabled(False)
+
         button_layout.addWidget(self.open_btn)
-        button_layout.addWidget(self.encrypt_btn)
-        button_layout.addWidget(self.decrypt_btn)
         button_layout.addWidget(self.save_btn)
         
         self.status_label = QLabel("Ready")
@@ -176,6 +196,18 @@ class SecureImageBrowser(QMainWindow):
         main_layout.addWidget(self.status_label)
         central_widget.setLayout(main_layout)
         self.setCentralWidget(central_widget)
+
+    def toggle_encryption_preview(self, checked):
+        if not self.original_image:
+            return
+            
+        self.is_encryption_preview = checked
+        if checked:
+            self.display_encrypted_version()
+            self.status_label.setText("Showing encryption preview")
+        else:
+            self.display_film_style_image(self.original_image)
+            self.status_label.setText("Showing normal image")
 
     def open_image(self):
         options = QFileDialog.Options()
@@ -189,16 +221,32 @@ class SecureImageBrowser(QMainWindow):
         try:
             _, ext = os.path.splitext(file_path)
             if ext.lower() == '.enc':
+                # Handle encrypted file
                 with open(file_path, 'rb') as f:
                     self.encrypted_data = f.read()
+                
+                # Auto-decrypt
+                decrypted_data = self.encryptor.decrypt_image(self.encrypted_data)
+                if decrypted_data is None:
+                    QMessageBox.critical(self, "Error", "Failed to decrypt image")
+                    return
+                    
+                self.current_image_data = decrypted_data
+                image = Image.open(io.BytesIO(decrypted_data))
+                if image.mode == 'RGBA':
+                    image = image.convert('RGB')
+                self.original_image = image.copy()
                 self.current_image_path = file_path
-                self.decrypt_btn.setEnabled(True)
-                self.encrypt_btn.setEnabled(False)
+                
+                # Reset encryption preview checkbox for encrypted files
+                self.preview_checkbox.setChecked(False)
+                self.is_encryption_preview = False
+                
+                self.display_film_style_image(image)
                 self.save_btn.setEnabled(True)
-                self.is_encrypted_view = True
-                self.display_encrypted_placeholder()
-                self.status_label.setText(f"Encrypted film loaded: {os.path.basename(file_path)}")
+                self.status_label.setText(f"Encrypted image loaded and decrypted successfully: {os.path.basename(file_path)}")
             else:
+                # Handle regular image file
                 image = Image.open(file_path)
                 if image.mode == 'RGBA':
                     image = image.convert('RGB')
@@ -207,85 +255,59 @@ class SecureImageBrowser(QMainWindow):
                 image.save(img_byte_arr, format=image.format or 'BMP')
                 self.current_image_data = img_byte_arr.getvalue()
                 self.current_image_path = file_path
-                self.display_film_style_image(image)
-                self.is_encrypted_view = False
-                self.encrypt_btn.setEnabled(True)
-                self.decrypt_btn.setEnabled(False)
+                
+                # Auto-encrypt (just for storing internally)
+                self.encrypted_data = self.encryptor.encrypt_image(self.current_image_data)
+                
+                # Automatically check encryption preview checkbox for regular images
+                self.preview_checkbox.setChecked(True)
+                self.is_encryption_preview = True
+                
+                # Display the encrypted version immediately
+                self.display_encrypted_version()
                 self.save_btn.setEnabled(True)
-                self.status_label.setText(f"Film loaded: {os.path.basename(file_path)}")
+                self.status_label.setText(f"Image loaded and encryption preview shown: {os.path.basename(file_path)}")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to open image: {str(e)}")
 
-    def encrypt_image(self):
-        if not self.current_image_data:
-            return
-        try:
-            self.encrypted_data = self.encryptor.encrypt_image(self.current_image_data)
-            if self.original_image:
-                self.display_encrypted_version()
-                self.is_encrypted_view = True
-            self.save_btn.setEnabled(True)
-            self.decrypt_btn.setEnabled(True)
-            self.encrypt_btn.setEnabled(False)
-            self.status_label.setText("Film encrypted - click 'Decrypt' to view original")
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to encrypt image: {str(e)}")
-
-    def decrypt_image(self):
-        if not self.encrypted_data:
-            return
-        try:
-            decrypted_data = self.encryptor.decrypt_image(self.encrypted_data)
-            if decrypted_data is None:
-                QMessageBox.critical(self, "Error", "Failed to decrypt image")
-                return
-            self.current_image_data = decrypted_data
-            image = Image.open(io.BytesIO(decrypted_data))
-            if image.mode == 'RGBA':
-                image = image.convert('RGB')
-            self.original_image = image.copy()
-            self.display_film_style_image(image)
-            self.is_encrypted_view = False
-            self.save_btn.setEnabled(True)
-            self.encrypt_btn.setEnabled(True)
-            self.decrypt_btn.setEnabled(False)
-            self.status_label.setText("Film decrypted successfully")
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to decrypt image: {str(e)}")
-
     def save_image(self):
         options = QFileDialog.Options()
-        if self.is_encrypted_view and self.encrypted_data:
-            file_path, _ = QFileDialog.getSaveFileName(
-                self, "Save Encrypted Picture", "", 
-                "Encrypted Files (*.enc)", 
-                options=options
-            )
-            if file_path and self.encrypted_data:
-                try:
-                    if not file_path.lower().endswith('.enc'):
-                        file_path += '.enc'
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Save Image", "",
+            "BMP Files (*.bmp);;JPEG Files (*.jpg);;PNG Files (*.png);;Encrypted Files (*.enc)",
+            options=options
+        )
+        if not file_path:
+            return
+
+        try:
+            if file_path.lower().endswith('.enc'):
+                # Save as encrypted file
+                if self.current_image_data:
+                    encrypted_data = self.encryptor.encrypt_image(self.current_image_data)
                     with open(file_path, 'wb') as f:
-                        f.write(self.encrypted_data)
-                    self.status_label.setText(f"Encrypted film saved to {os.path.basename(file_path)}")
-                except Exception as e:
-                    QMessageBox.critical(self, "Error", f"Failed to save encrypted image: {str(e)}")
-        elif self.current_image_data and not self.is_encrypted_view:
-            file_path, _ = QFileDialog.getSaveFileName(
-                self, "Save Film", "", 
-                "BMP Files (*.bmp);;JPEG Files (*.jpg);;PNG Files (*.png);;All Files (*)", 
-                options=options
-            )
-            if not file_path:
-                return
-            try:
-                image = Image.open(io.BytesIO(self.current_image_data))
-                if image.mode == 'RGBA':
-                    image = image.convert('RGB')
-                image.save(file_path)
-                self.status_label.setText(f"Film saved to {os.path.basename(file_path)}")
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to save image: {str(e)}")
+                        f.write(encrypted_data)
+                    self.status_label.setText(f"Image automatically encrypted and saved: {os.path.basename(file_path)}")
+                else:
+                    QMessageBox.warning(self, "Save Error", "No image data to encrypt.")
+            else:
+                # Save as regular image file
+                if self.current_image_data:
+                    image = Image.open(io.BytesIO(self.current_image_data))
+                    if image.mode == 'RGBA':
+                        image = image.convert('RGB')
+                    image.save(file_path)
+                    
+                    # Also create an encrypted version automatically
+                    encrypted_path = file_path + ".enc"
+                    encrypted_data = self.encryptor.encrypt_image(self.current_image_data)
+                    with open(encrypted_path, 'wb') as ef:
+                        ef.write(encrypted_data)
+                    self.status_label.setText(f"Image saved and automatically encrypted: {os.path.basename(file_path)}")
+                else:
+                    QMessageBox.warning(self, "Save Error", "No image data available.")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to save image: {str(e)}")
 
     def display_image_from_pil(self, pil_image):
         if pil_image.mode != "RGB":
@@ -305,7 +327,6 @@ class SecureImageBrowser(QMainWindow):
             film_image = original_image.copy()
             if film_image.mode != "RGB":
                 film_image = film_image.convert("RGB")
-            width, height = film_image.size
             self.display_image_from_pil(film_image)
 
     def display_encrypted_version(self):
@@ -313,43 +334,36 @@ class SecureImageBrowser(QMainWindow):
             encrypted_image = self.original_image.copy()
             if encrypted_image.mode != "RGB":
                 encrypted_image = encrypted_image.convert("RGB")
+            
+            # Apply visual effects to represent encryption
             encrypted_image = ImageOps.grayscale(encrypted_image)
             encrypted_image = ImageOps.autocontrast(encrypted_image, cutoff=5)
             encrypted_image = ImageOps.solarize(encrypted_image, threshold=128)
             encrypted_image = encrypted_image.convert("RGB")
+            
             width, height = encrypted_image.size
             draw = ImageDraw.Draw(encrypted_image)
+            
+            # Add a grid pattern
             for y in range(0, height, 10):
                 draw.line([(0, y), (width, y)], fill=(0, 100, 200), width=1)
             for x in range(0, width, 10):
                 draw.line([(x, 0), (x, height)], fill=(0, 100, 200), width=1)
+            
+            # Add "ENCRYPTED" text overlay
             text_position = (width//2-60, height//2)
             draw.text((text_position[0]+2, text_position[1]+2), "ENCRYPTED", fill=(0, 0, 0))
             draw.text(text_position, "ENCRYPTED", fill=(255, 50, 50))
+            
+            # Add some scanline effects
             for i in range(0, height, 40):
                 box = (0, i, width, min(i+5, height))
                 region = encrypted_image.crop(box)
                 region = ImageOps.invert(region)
                 encrypted_image.paste(region, box)
-            for i in range(5):
-                x = int(width * 0.1 * i)
-                draw.line([(x, 0), (x, height)], fill=(200, 200, 200), width=1)
+            
             self.display_image_from_pil(encrypted_image)
 
-    def display_encrypted_placeholder(self):
-        width, height = 400, 300
-        placeholder = Image.new('RGB', (width, height), color=(20, 20, 30))
-        draw = ImageDraw.Draw(placeholder)
-        for y in range(0, height, 2):
-            draw.line([(0, y), (width, y)], fill=(25, 25, 35), width=1)
-        for i in range(20):
-            y = int(height * 0.05 * i)
-            h = random.randint(2, 10)
-            color = (0, 100, 200) if i % 2 == 0 else (200, 0, 50)
-            draw.rectangle([(0, y), (width, y+h)], fill=color)
-        draw.text((width//2-80, height//2-30), "ENCRYPTED FILM", fill=(255, 255, 255))
-        draw.text((width//2-90, height//2), "CLICK DECRYPT TO VIEW", fill=(255, 200, 100))
-        self.display_image_from_pil(placeholder)
 
 def main():
     app = QApplication(sys.argv)
