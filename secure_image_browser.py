@@ -1,6 +1,7 @@
 import os
 import sys
 import io
+import random
 from PIL import Image, ImageFilter, ImageOps, ImageDraw, ImageFont
 from cryptography.fernet import Fernet
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
@@ -9,9 +10,23 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
 from PyQt5.QtGui import QPixmap, QImage, QFont, QPalette, QColor
 from PyQt5.QtCore import Qt
 
+
+KEY_FILE = "secret.key"
+
+def load_or_generate_key():
+    if os.path.exists(KEY_FILE):
+        with open(KEY_FILE, "rb") as f:
+            return f.read()
+    else:
+        key = Fernet.generate_key()
+        with open(KEY_FILE, "wb") as f:
+            f.write(key)
+        return key
+
+
 class ImageEncryptor:
-    def __init__(self,):
-            self.key = Fernet.generate_key()
+    def __init__(self):
+        self.key = load_or_generate_key()
     
     def encrypt_image(self, image_data):
         f = Fernet(self.key)
